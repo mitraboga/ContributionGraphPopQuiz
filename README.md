@@ -330,3 +330,20 @@ MIT (or your preferred license). Feel free to remix.
 
 This project helped me keep a **daily learning habit**, while giving my GitHub graph **authentic activity**. If you adopt it, consider customizing the question bank to match what you want to learn next. Keep it fun—and keep shipping 💚.
 
+---
+
+## 👤 Author
+
+<p align="center">
+  <b style="font-size:18px;">Mitra Boga</b><br/><br/>
+
+  <!-- LinkedIn: true blue label + lighter-blue username block -->
+  <a href="https://www.linkedin.com/in/bogamitra/" target="_blank" rel="noopener noreferrer">
+    <img src="https://img.shields.io/badge/LinkedIn-bogamitra-4DA3FF?style=for-the-badge&logo=linkedin&logoColor=white&labelColor=0A66C2" />
+  </a>
+
+  <!-- X: near-black label + darker-gray username block (dark-mode friendly) -->
+  <a href="https://x.com/techtraboga" target="_blank" rel="noopener noreferrer">
+    <img src="https://img.shields.io/badge/X-@techtraboga-3A3F45?style=for-the-badge&logo=x&logoColor=white&labelColor=111418" />
+  </a>
+</p>
