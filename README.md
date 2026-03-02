@@ -23,7 +23,7 @@
   </a>
 </p>
 
-## Why I Created this Project
+##🚀 Why I Created this Project
 
 I wanted a **daily discipline** of contributing to GitHub—but I didn’t want to spam meaningless commits. Instead, I built a **Telegram bot** that sends me a **daily 5-question CS quiz** (DSA, Cloud, Cybersecurity, DevOps, AI/ML, Data Science, General CS). Each finished quiz day **creates 5 lightweight commits** to a repository I control. That way:
 
@@ -186,7 +186,7 @@ Ensure you have:
 
 ---
 
-## ☁️Deploy on Render (free)
+# ☁️ Render Deployment (Free Tier – 24/7 Hosting)
 
 You can run the bot 24/7 on **Render** so you’ll get the daily notification even when your laptop is off.
 
@@ -247,6 +247,111 @@ You can run the bot 24/7 on **Render** so you’ll get the daily notification ev
 3. Logs should show:
 
    * `Starting in WEBHOOK mode at https://.../telegram/<secret>`
+
+This is what allows:
+
+- Phone notifications
+- Automated commits
+- Laptop OFF
+- System still running
+
+---
+
+## Step 1 — Create Web Service
+
+<p align="center">
+  <img src="assets/Render1.png" width="95%" />
+</p>
+
+- New → Web Service
+- Connect GitHub repo
+- Python
+- Free Plan
+
+---
+
+## Step 2 — Add Environment Variables
+
+<p align="center">
+  <img src="assets/Render2.png" width="95%" />
+</p>
+
+---
+
+## Step 3 — Confirm Running Logs
+
+<p align="center">
+  <img src="assets/Render3.png" width="95%" />
+</p>
+
+You should see:
+
+- Scheduler started
+- Application started
+- Webhook set successfully
+- No errors
+
+---
+
+# 🟢 How It Updates My GitHub Contribution Graph
+
+After completing 5 questions:
+
+1. Bot marks day complete
+2. Calls GitHub REST API
+3. Creates 5 commits
+4. Commits authored with verified email
+5. GitHub counts them as contributions
+
+One day → Five green squares.
+
+---
+
+## 🟢 Real Contribution Graph Result
+
+<p align="center">
+  <img src="assets/CG_Update.png" width="95%" />
+</p>
+
+This is 100% automated via:
+
+- Telegram
+- SQLite tracking
+- APScheduler
+- GitHub API
+- Render cloud deployment
+
+---
+
+# 🔐 Requirements
+
+- Python 3.11+
+- Telegram Bot Token
+- GitHub Personal Access Token
+- Verified GitHub email
+- Render account (free tier works)
+
+---
+
+# 🧠 Why This Is Powerful
+
+This isn't just a bot.
+
+It’s:
+
+- Behavioral reinforcement system
+- Learning engine
+- Automated GitHub contribution pipeline
+- Cloud-hosted productivity system
+
+It enforces discipline.
+
+---
+
+# 🛡 Security
+
+`.gitignore` should include:
+
 
 ---
 
@@ -370,5 +475,6 @@ This project helped me keep a **daily learning habit**, while giving my GitHub g
     <img src="https://img.shields.io/badge/X-@techtraboga-3A3F45?style=for-the-badge&logo=x&logoColor=white&labelColor=111418" />
   </a>
 </p>
+
 
 
