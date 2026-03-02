@@ -11,8 +11,6 @@
   <img src="https://img.shields.io/badge/Render-Cloud%20Deployment-46E3B7?logo=render&logoColor=black" alt="Render" />
   <img src="https://img.shields.io/badge/Webhook%20%2F%20Polling-Event%20Driven-8A2BE2" alt="Webhook / Polling" />
   <img src="https://img.shields.io/badge/Automation-Daily%20Commits-FF6F00" alt="Automation" />
-  <img src="https://img.shields.io/badge/Gamification-Streak%20Engine-DC143C" alt="Gamification" />
-  <img src="https://img.shields.io/badge/License-MIT-lightgrey" alt="License" />
 </p>
 
 ---
@@ -468,6 +466,7 @@ This project helped me keep a **daily learning habit**, while giving my GitHub g
     <img src="https://img.shields.io/badge/X-@techtraboga-3A3F45?style=for-the-badge&logo=x&logoColor=white&labelColor=111418" />
   </a>
 </p>
+
 
 
 
