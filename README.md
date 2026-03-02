@@ -293,7 +293,7 @@ You should see:
 
 ---
 
-# 🟢 How It Updates My GitHub Contribution Graph
+## 🎯 How It Updates My GitHub Contribution Graph?
 
 After completing 5 questions:
 
@@ -475,6 +475,7 @@ This project helped me keep a **daily learning habit**, while giving my GitHub g
     <img src="https://img.shields.io/badge/X-@techtraboga-3A3F45?style=for-the-badge&logo=x&logoColor=white&labelColor=111418" />
   </a>
 </p>
+
 
 
 
