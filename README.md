@@ -1,6 +1,21 @@
-# Contribution Graph Pop Quiz 🤖🧠
+<h1 align="center">🤖 Contribution Graph Pop Quiz 🧠</h1>
+<h3 align="center">Telegram Quiz Bot + Automated GitHub Commits for Daily Consistency</h3>
 
-## Why this exists? (the story)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12-blue?logo=python" alt="Python" />
+  <img src="https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?logo=telegram&logoColor=white" alt="Telegram Bot API" />
+  <img src="https://img.shields.io/badge/python--telegram--bot-v20-2CA5E0" alt="python-telegram-bot" />
+  <img src="https://img.shields.io/badge/SQLite-Database-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
+  <img src="https://img.shields.io/badge/APScheduler-Task%20Scheduling-6A5ACD" alt="APScheduler" />
+  <img src="https://img.shields.io/badge/GitHub-REST%20API-181717?logo=github" alt="GitHub API" />
+  <img src="https://img.shields.io/badge/Render-Cloud%20Deployment-46E3B7?logo=render&logoColor=black" alt="Render" />
+  <img src="https://img.shields.io/badge/Webhook%20%2F%20Polling-Event%20Driven-8A2BE2" alt="Webhook / Polling" />
+  <img src="https://img.shields.io/badge/Automation-Daily%20Commits-FF6F00" alt="Automation" />
+  <img src="https://img.shields.io/badge/Gamification-Streak%20Engine-DC143C" alt="Gamification" />
+  <img src="https://img.shields.io/badge/License-MIT-lightgrey" alt="License" />
+</p>
+
+## Why I Created this Project
 
 I wanted a **daily discipline** of contributing to GitHub—but I didn’t want to spam meaningless commits. Instead, I built a **Telegram bot** that sends me a **daily 5-question CS quiz** (DSA, Cloud, Cybersecurity, DevOps, AI/ML, Data Science, General CS). Each finished quiz day **creates 5 lightweight commits** to a repository I control. That way:
 
@@ -347,3 +362,4 @@ This project helped me keep a **daily learning habit**, while giving my GitHub g
     <img src="https://img.shields.io/badge/X-@techtraboga-3A3F45?style=for-the-badge&logo=x&logoColor=white&labelColor=111418" />
   </a>
 </p>
+
