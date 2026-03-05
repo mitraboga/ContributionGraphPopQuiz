@@ -21,7 +21,7 @@
   </a>
 </p>
 
-##🚀 Why I Created this Project
+## 🚀 Why I Created this Project
 
 I wanted a **daily discipline** of contributing to GitHub—but I didn’t want to spam meaningless commits. Instead, I built a **Telegram bot** that sends me a **daily 5-question CS quiz** (DSA, Cloud, Cybersecurity, DevOps, AI/ML, Data Science, General CS). Each finished quiz day **creates 5 lightweight commits** to a repository I control. That way:
 
@@ -466,6 +466,7 @@ This project helped me keep a **daily learning habit**, while giving my GitHub g
     <img src="https://img.shields.io/badge/X-@techtraboga-3A3F45?style=for-the-badge&logo=x&logoColor=white&labelColor=111418" />
   </a>
 </p>
+
 
 
 
