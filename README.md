@@ -301,7 +301,7 @@ After completing 5 questions:
 4. Commits authored with verified email
 5. GitHub counts them as contributions
 
-One day → Five green squares.
+One day → 5x green square.
 
 ---
 
@@ -466,6 +466,7 @@ This project helped me keep a **daily learning habit**, while giving my GitHub g
     <img src="https://img.shields.io/badge/X-@techtraboga-3A3F45?style=for-the-badge&logo=x&logoColor=white&labelColor=111418" />
   </a>
 </p>
+
 
 
 
