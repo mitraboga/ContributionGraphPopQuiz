@@ -439,13 +439,7 @@ Thumbs.db
 
 ---
 
-## 💳License
-
-MIT (or your preferred license). Feel free to remix.
-
----
-
-## 🖊️Final notes
+## 🖊️Author notes
 
 This project helped me keep a **daily learning habit**, while giving my GitHub graph **authentic activity**. If you adopt it, consider customizing the question bank to match what you want to learn next. Keep it fun—and keep shipping 💚.
 
