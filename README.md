@@ -1,449 +1,183 @@
-<h1 align="center">🤖 Contribution Graph Pop Quiz 🧠</h1>
-<h3 align="center">Telegram Quiz Bot + Automated GitHub Commits for Daily Consistency</h3>
-
+<h1 align="center">🤖 Contribution Graph Pop Quiz → LeetCode Commit Bot 🧠</h1>
+<h3 align="center">Telegram reminders, accepted LeetCode solves, and GitHub commit rewards</h3>
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.12-blue?logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?logo=telegram&logoColor=white" alt="Telegram Bot API" />
-  <img src="https://img.shields.io/badge/python--telegram--bot-v20-2CA5E0" alt="python-telegram-bot" />
-  <img src="https://img.shields.io/badge/SQLite-Database-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
-  <img src="https://img.shields.io/badge/APScheduler-Task%20Scheduling-6A5ACD" alt="APScheduler" />
-  <img src="https://img.shields.io/badge/GitHub-REST%20API-181717?logo=github" alt="GitHub API" />
-  <img src="https://img.shields.io/badge/Render-Cloud%20Deployment-46E3B7?logo=render&logoColor=black" alt="Render" />
-  <img src="https://img.shields.io/badge/Webhook%20%2F%20Polling-Event%20Driven-8A2BE2" alt="Webhook / Polling" />
-  <img src="https://img.shields.io/badge/Automation-Daily%20Commits-FF6F00" alt="Automation" />
+  <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python" alt="Python" />
+  <img src="https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?logo=telegram" alt="Telegram" />
+  <img src="https://img.shields.io/badge/GitHub-Actions%20%26%20REST-181717?logo=github" alt="GitHub" />
+  <img src="https://img.shields.io/badge/SQLite-Cache-003B57?logo=sqlite" alt="SQLite" />
+  <img src="https://img.shields.io/badge/Render-Webhooks-46E3B7?logo=render" alt="Render" />
 </p>
 
----
+This personal Telegram bot rewards Accepted LeetCode submissions from **[_mitraboga](https://leetcode.com/u/_mitraboga/)**. It verifies the problem's difficulty and creates a fixed number of commits in the configured GitHub repository.
 
-<p align="center">
-  <a href="https://mitraboga.github.io/CloudCostCalculator/" target="_blank" rel="noopener noreferrer">
-    <img src="assets/Telegram_Quiz_Preview.gif" width="95%" alt="Live Cloud Cost Dashboard Preview"/>
-  </a>
-</p>
+| Problem difficulty | Commits per problem |
+| --- | ---: |
+| Easy | 10 |
+| Medium | 20 |
+| Hard | 50 |
 
-## 🚀 Why I Created this Project
+The CS question bank remains available as optional practice. `/forcecommit` remains a manual fallback.
 
-I wanted a **daily discipline** of contributing to GitHub—but I didn’t want to spam meaningless commits. Instead, I built a **Telegram bot** that sends me a **daily 5-question CS quiz** (DSA, Cloud, Cybersecurity, DevOps, AI/ML, Data Science, General CS). Each finished quiz day **creates 5 lightweight commits** to a repository I control. That way:
+## How rewards work
 
-* I **learn** and sharpen my CS knowledge every day.
-* I **keep my GitHub contribution graph green** with **purposeful activity**—one quiz = five commits.
-* It’s **automatic** once configured, and runs **24/7** on Render (free tier) so I get my reminders even when my laptop is off.
+1. Solve any LeetCode problem and receive **Accepted**. The daily challenge is a suggestion; any problem qualifies.
+2. Send `/check` in Telegram, or wait for an automatic check.
+3. The bot retrieves the profile's recent Accepted submissions and verifies difficulty.
+4. Each problem gets one reward after activation, identified by username and problem slug. Repeated submissions of that problem do not earn more commits.
+5. The bot creates 10, 20, or 50 JSON records, one per commit, on the destination repository's **default branch**.
 
----
+Each record contains the problem title/link, submission ID/link, acceptance time, local date, difficulty, reward size, and reward step. These are **reward log commits**, not automatically uploaded solution code.
 
-## ⚙️What this project does
+Rewards live at `leetcode/_mitraboga/<problem-slug>/001.json` through `010.json`, `020.json`, or `050.json`. The first record establishes the canonical reward. The last record confirms completion. If a request fails after 7 of 50 commits, `/check` resumes the unfinished reward and creates the remaining 43. Deterministic file paths prevent duplicate rewards across `/check`, restarts, GitHub Actions, and lost API responses.
 
-* Telegram bot with commands:
+The default activation date is **2026-10-07 in Asia/Kolkata**. Earlier submissions do not earn rewards. Set `LEETCODE_START_DATE` once and keep it fixed in both hosting and Actions. Solving an older problem again after activation can earn its first recorded reward; the public recent-submission list cannot establish your full lifetime solve history.
 
-  * `/daily` — take a 5-question CS quiz
-  * `/notify HH:MM [TZ]` — schedule a daily reminder (e.g., `/notify 07:30 Asia/Kolkata`)
-  * `/when` — show your next reminder time
-  * `/unnotify` — disable your reminder
-  * `/streak` — show your current/best streak (completing all 5 in a day)
-  * `/streakboard` — leaderboard per chat
-  * `/setuser <github-username>` + `/quiz` — a separate GitHub contributions quiz mode
-  * `/forcecommit [n] [tag]` — manual commits for testing (optional)
-* Persists:
+## Telegram commands
 
-  * Scores and streaks in `quiz_scores.db` (SQLite)
-  * Reminder preferences per user (time + timezone)
-* After you answer **all 5 questions** for the day, it triggers **5 GitHub commits** via the GitHub API.
-* Runs locally (polling) **or** in webhook mode. On **Render**, you can run:
+| Command | Behavior |
+| --- | --- |
+| `/start`, `/help` | Help and reward rules |
+| `/daily` | Today's LeetCode challenge |
+| `/check` | Discover accepted problems and retry pending rewards |
+| `/status` | Linked profile, activation date, and reward settings |
+| `/forcecommit [n] [tag]` | Manual override; default 1, maximum 50 commits |
+| `/diagnose` | Read-only GitHub authentication check; no token values displayed |
+| `/notify HH:MM [Area/City]` | Schedule a daily LeetCode reminder |
+| `/when`, `/unnotify` | Show or disable the saved reminder |
+| `/csquiz`, `/quiz` | Optional five-question CS practice; no reward commits |
+| `/score` | Practice accuracy, including existing historical scores |
+| `/streak` | Streak and solve totals from locally synced reward records |
+| `/whoami` | Show Telegram user/chat IDs for setup |
 
-  * **Polling + keepalive** (simple, works on free tier)
-  * **Webhook mode** (custom URL path using a secret)
+Examples:
 
----
-
-## 📐Architecture at a glance
-
-```
-main.py                 # Telegram bot, commands, scheduling, webhook/polling
-questions.py            # Question bank + random question selection
-quiz_engine.py          # GitHub contribution-graph question generator (original mode)
-storage.py              # SQLite schema + CRUD for scores, reminders, streaks
-github_committer.py     # Minimal GitHub API client to create file commits
-requirements.txt        # Python dependencies
-.env.example            # Example env vars (copy to .env locally; never commit real secrets)
+```text
+/daily
+/check
+/forcecommit 10 busy-day
+/notify 09:00 Asia/Kolkata
+/csquiz
 ```
 
-**Key flows:**
+The obsolete contribution-count `/quiz` flow has been replaced by CS practice. Answers are consumed once, answered buttons are removed, old message callbacks cannot affect new questions, and questions rotate without repeats until the bank is exhausted within a running session. Only the configured owner can use reward commands, and only in a private chat.
 
-* `/notify HH:MM TZ` → saves your reminder in DB → schedules a **daily JobQueue job** at that time in your timezone.
-* At reminder time → bot DM’s you a quiz prompt → you answer Q1..Q5 → when you hit 5 **for that day**, the bot:
+## Local setup
 
-  1. Marks your day complete (streak++)
-  2. Calls `github_committer.py` to create **5 commits** in your configured repo.
-
----
-
-## 📄Requirements
-
-* Python 3.11+
-* A Telegram bot token from **BotFather**
-* A GitHub repo to write commits to (e.g., `yourname/daily-quiz-commits`)
-* A GitHub **Personal Access Token (PAT)** with minimal scopes:
-
-  * Public repo: `public_repo`
-  * Private repo: `repo`
-* (Render deployment) A Render account
-
----
-
-## 📲Installation (local)
+Python 3.11 or newer is required. Get a bot token from [BotFather](https://t.me/BotFather).
 
 ```bash
-# Clone your repo (omit if you already have it locally)
-git clone https://github.com/<you>/Contribution-Graph-Pop-Quiz.git
-cd Contribution-Graph-Pop-Quiz
-
-# Create and activate a virtualenv (Windows PowerShell shown)
+git clone https://github.com/mitraboga/ContributionGraphPopQuiz.git
+cd ContributionGraphPopQuiz
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```
 
-# Install dependencies
+Windows PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+Copy-Item .env.example .env
 pip install -r requirements.txt
 ```
 
-**Recommended `requirements.txt`:**
+macOS/Linux:
 
-```txt
-python-telegram-bot[job-queue]==20.7
-python-dotenv==1.0.1
-tzdata==2025.1
-requests==2.32.3
+```bash
+source .venv/bin/activate
+cp .env.example .env
+pip install -r requirements.txt
 ```
 
----
-
-## 💻Configure environment
-
-Create `.env` (do **not** commit this file) based on `.env.example`:
+Fill in `.env`. Real secrets are excluded from Git and Docker builds:
 
 ```env
-# Telegram
-BOT_TOKEN=123456789:AA...fromBotFather...
-
-# GitHub commits
-GITHUB_TOKEN=ghp_xxx...   # classic PAT; public_repo or repo depending on target
-GITHUB_REPO=yourname/daily-quiz-commits
-GH_USER_NAME=Your Name
-GH_USER_EMAIL=your-verified-email@example.com  # must be a verified GitHub email
-
-# Timezone for defaults
+BOT_TOKEN=YOUR_BOTFATHER_TOKEN
+TELEGRAM_USER_ID=YOUR_NUMERIC_USER_ID
+TELEGRAM_CHAT_ID=YOUR_PRIVATE_CHAT_ID
+LEETCODE_USERNAME=_mitraboga
+LEETCODE_START_DATE=2026-10-07
 TZ=Asia/Kolkata
-
-# (Webhook mode only)
-WEBHOOK_SECRET=some-long-random-string
-BASE_URL=https://your-render-service.onrender.com
-PORT=10000  # Render injects this; you don't need it locally
+GITHUB_TOKEN=YOUR_PERSONAL_ACCESS_TOKEN
+GITHUB_REPO=mitraboga/YOUR_EXISTING_COMMIT_REPOSITORY
+GH_USER_NAME=Mitra Boga
+GH_USER_EMAIL=YOUR_VERIFIED_GITHUB_EMAIL
+DB_PATH=quiz_scores.db
 ```
 
-> **Important:** Your `GH_USER_EMAIL` must be a **verified email** on your GitHub account, otherwise commits **won’t** show on your contribution graph.
-
----
-
-## 🏃‍♂️‍➡️Run locally (polling)
+Run:
 
 ```bash
-# from your venv
-python -u main.py
+python main.py
 ```
 
-* You should see logs like:
+Use `/whoami` to obtain your numeric IDs if needed, then update the environment and restart. In a private chat the user and chat IDs normally match. `TELEGRAM_CHAT_ID` can also supply owner identity when `TELEGRAM_USER_ID` is unset.
 
-  * `Keepalive HTTP on 8000`
-  * `Starting in polling mode`
-  * `Application started`
+Create a **fine-grained personal access token** for the destination repository with **Contents: Read and write**. Use a verified GitHub email (or your GitHub-provided noreply address). `GH_USER_NAME` and `GH_USER_EMAIL` are optional as a pair; leave both empty to let GitHub attribute the commits to the token owner. A repository with no default branch needs an initial commit before rewards can be written.
 
-Now, in Telegram:
+## Update the existing Render bot
 
-* Send `/start`
-* Schedule a reminder: `/notify 11:00 Asia/Kolkata`
+1. Merge/deploy the updated code on your Render service.
+2. In **Render → your service → Environment**, replace the invalid `GITHUB_TOKEN` with a valid token. Keep `BOT_TOKEN` and the existing destination `GITHUB_REPO`.
+3. Add `TELEGRAM_USER_ID`, `TELEGRAM_CHAT_ID`, `LEETCODE_USERNAME=_mitraboga`, `LEETCODE_START_DATE=2026-10-07`, and `TZ=Asia/Kolkata`. Keep the same activation date in Actions.
+4. Set a custom `WEBHOOK_SECRET` using letters, digits, `_`, and `-`. Existing non-default secrets can be retained. Render's `RENDER_EXTERNAL_URL` automatically selects webhook mode.
+5. Start command: `python main.py`. Build command: `pip install -r requirements.txt`.
+6. Redeploy, then send `/start`, `/status`, and `/diagnose`. Once authentication succeeds, solve a problem and send `/check`.
 
-  * You’ll receive a **test** question in ~2 seconds (confirms it’s armed).
-* Check next run: `/when`
-* Take a quiz: `/daily`
+The webhook uses `/telegram` and verifies Telegram's secret header. The secret is not embedded in URLs. Hosting environment values take precedence over `.env`, preventing stale local values from overriding the updated token.
 
----
+The app checks submissions every **15 minutes while running**. [Render free services can sleep after inactivity and their local files are ephemeral](https://render.com/docs/free). SQLite reminder preferences, practice scores, pending queues, and locally synced streak history therefore need a persistent disk for durability. Reward deduplication itself survives a lost SQLite database because the records are stored in GitHub. `/streak` reports the synced cache; after cache loss, `/check` can repopulate only submissions still visible in LeetCode's recent list.
 
-## 🪝Webhook mode (optional)
+## GitHub Actions: checks while Render sleeps
 
-If you prefer webhook mode, you can run:
+The included `LeetCode reward sync` workflow checks at minutes **07 and 37 each hour**, even when Render is asleep. Its schedule is opt-in and runs from the default branch. Configure this repository under **Settings → Secrets and variables → Actions**:
+
+**Secrets**
+
+| Name | Value |
+| --- | --- |
+| `COMMIT_GITHUB_TOKEN` | Valid personal token with write access to the destination repository |
+| `BOT_TOKEN` | Existing Telegram bot token, for completion/error notifications |
+| `TELEGRAM_CHAT_ID` | Your private chat ID |
+
+**Variables**
+
+| Name | Value |
+| --- | --- |
+| `GITHUB_REPO` | Your existing destination repository, `owner/name` |
+| `LEETCODE_USERNAME` | `_mitraboga` |
+| `LEETCODE_START_DATE` | `2026-10-07` |
+| `GH_USER_NAME`, `GH_USER_EMAIL` | Both set, or both unset, matching Render |
+| `LEETCODE_SYNC_ENABLED` | `true` to enable scheduled rewards |
+| `LEETCODE_REMINDER_ENABLED` | Optional `true` for a 09:00 IST reminder from Actions |
+
+The Actions token secret is named `COMMIT_GITHUB_TOKEN` to distinguish it from GitHub's built-in workflow token. Use your personal token so commits are attributed to your account. The same destination and author settings must be used by Render and Actions.
+
+After merging, run **Actions → LeetCode reward sync → Run workflow** to verify configuration. Leave `LEETCODE_REMINDER_ENABLED` unset if using `/notify` to avoid two daily reminders. Scheduled Actions can be delayed under load; `/check` remains available. See [GitHub's schedule guidance](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
+## Troubleshooting
+
+**GitHub 401:** The deployed token is invalid, expired, revoked, or incorrectly copied. Update **Render Environment → GITHUB_TOKEN** and **Actions secrets → COMMIT_GITHUB_TOKEN**, then redeploy. Updating code or `/setuser` cannot repair an invalid token. Never paste credentials into Telegram or commit them.
+
+**GitHub 403/429:** Check Contents permission and repository access. If rate limited, wait before `/check`. Commits are serialized with a delay between writes. Pending reward steps remain retryable.
+
+**GitHub 404:** Check `GITHUB_REPO`, token repository access, and the default branch. `/diagnose` checks authentication/read access without making a test commit; write permission is exercised by an actual reward or manual override.
+
+**No new reward:** Confirm the profile, Accepted status, activation date, and whether that problem was already rewarded. LeetCode exposes only recent Accepted submissions (requested limit: 20), so long outages or more than 20 submissions between checks can hide unsynced solves. The website GraphQL interface is unofficial and can change or become unavailable; the bot reports errors instead of guessing completion or difficulty.
+
+**Commits missing from the graph:** Commits must satisfy [GitHub's contribution requirements](https://docs.github.com/en/account-and-profile/how-tos/contribution-settings/troubleshooting-missing-contributions), including account-linked author email and an eligible repository/default branch. Private contributions also depend on profile visibility settings. The graph can take time to update. Reward records preserve the acceptance day, but commits appear on the day they are actually created; late retries do not backdate Git history.
+
+**Manual override interrupted:** The response states how many commits completed. `/forcecommit` creates a new manual request every time; choose only the remaining count if you intend to complete the same total. It does not mark LeetCode problems solved or extend their streak.
+
+## Validation and files
 
 ```bash
-python main.py --webhook
+pip install pytest
+python -m pytest -q
+python -m compileall -q main.py rewards.py github_committer.py leetcode_client.py
+# Read-only GitHub configuration check; creates no commits:
+python github_committer.py
 ```
 
-Ensure you have:
-
-* `WEBHOOK_SECRET` and `BASE_URL` set in your environment.
-* The app will register webhook at `BASE_URL + "/telegram/<WEBHOOK_SECRET>"`.
-
-**Note:** Polling mode is simpler and works well on Render free tier (with our keepalive). Webhook mode is available but not required.
-
----
-
-# ☁️ Render Deployment (Free Tier – 24/7 Hosting)
-
-You can run the bot 24/7 on **Render** so you’ll get the daily notification even when your laptop is off.
-
-### Option A: Polling (simple, recommended)
-
-1. Push your code to GitHub (without `.env`).
-
-2. On Render:
-
-   * **Create New → Web Service**
-   * Link your GitHub repo
-   * **Build Command**:
-
-     ```
-     pip install -r requirements.txt
-     ```
-   * **Start Command**:
-
-     ```
-     python main.py
-     ```
-   * **Environment** → Add:
-
-     ```
-     BOT_TOKEN=...
-     GITHUB_TOKEN=...
-     GITHUB_REPO=yourname/daily-quiz-commits
-     GH_USER_NAME=Your Name
-     GH_USER_EMAIL=your-email@example.com
-     TZ=Asia/Kolkata
-     ```
-
-3. Deploy. Logs should show:
-
-   * `Keepalive HTTP on <port>`
-   * `Starting in polling mode`
-
-4. In Telegram:
-
-   * `/notify 11:00 Asia/Kolkata` → you’ll get a test question in ~2 seconds.
-   * `/when` → shows next run (tomorrow at 11:00 IST).
-
-> **Why this works on free tier:** We run a tiny HTTP server inside `main.py` so Render’s health checks keep the service alive. PTB uses long-polling to fetch updates.
-
-### Option B: Webhook (optional)
-
-1. Same as above but change **Start Command** to:
-
-   ```
-   python main.py --webhook
-   ```
-2. Add env vars:
-
-   ```
-   WEBHOOK_SECRET=some-long-random-string
-   BASE_URL=https://your-service.onrender.com
-   ```
-3. Logs should show:
-
-   * `Starting in WEBHOOK mode at https://.../telegram/<secret>`
-
-This is what allows:
-
-- Phone notifications
-- Automated commits
-- Laptop OFF
-- System still running
-
----
-
-## Step 1 — Create Web Service
-
-<p align="center">
-  <img src="assets/Render1.png" width="95%" />
-</p>
-
-- New → Web Service
-- Connect GitHub repo
-- Python
-- Free Plan
-
----
-
-## Step 2 — Add Environment Variables
-
-<p align="center">
-  <img src="assets/Render2.png" width="95%" />
-</p>
-
----
-
-## Step 3 — Confirm Running Logs
-
-<p align="center">
-  <img src="assets/Render3.png" width="95%" />
-</p>
-
-You should see:
-
-- Scheduler started
-- Application started
-- Webhook set successfully
-- No errors
-
----
-
-## 🎯 How It Updates My GitHub Contribution Graph?
-
-After completing 5 questions:
-
-1. Bot marks day complete
-2. Calls GitHub REST API
-3. Creates 5 commits
-4. Commits authored with verified email
-5. GitHub counts them as contributions
-
-One day → 5x green square.
-
----
-
-## 🟢 Real Contribution Graph Result
-
-<p align="center">
-  <img src="assets/CG_Update.png" width="95%" />
-</p>
-
-This is 100% automated via:
-
-- Telegram
-- SQLite tracking
-- APScheduler
-- GitHub API
-- Render cloud deployment
-
----
-
-# 🔐 Requirements
-
-- Python 3.11+
-- Telegram Bot Token
-- GitHub Personal Access Token
-- Verified GitHub email
-- Render account (free tier works)
-
----
-
-# 💥 Why This Is Powerful
-
-This isn't just a bot.
-
-It’s:
-
-- Behavioral reinforcement system
-- Learning engine
-- Automated GitHub contribution pipeline
-- Cloud-hosted productivity system
-
-It enforces discipline.
-
----
-
-## 🐍How the 5 commits work (and how to make them count)
-
-When you answer **all 5 questions** for the day via `/daily`, the bot:
-
-1. Marks the day completed in `daily_progress` → streak tracking.
-2. Calls `github_committer.make_daily_commits_if_configured(n=5, tag=<user_id>)`.
-3. That function creates/updates tiny files in `GITHUB_REPO`, **authored** as `GH_USER_NAME <GH_USER_EMAIL>` using your `GITHUB_TOKEN`.
-
-For the commits to **appear on your contribution graph**, ensure:
-
-* `GH_USER_EMAIL` is a **verified** email on your GitHub account.
-* The repo (`GITHUB_REPO`) is under your account or you have write access.
-* Timezone is correct (commits happen on the intended date).
-
----
-
-## 📜Commands reference
-
-* `/start` — Welcome
-* `/help` — Show help
-* `/setuser <github-username>` — Set username for GitHub quiz
-* `/quiz` — Original GitHub contributions quiz
-* `/daily` — CS quiz (5 questions, 1/day)
-* `/notify HH:MM [Area/City]` — Schedule reminder (e.g., `/notify 07:30 Asia/Kolkata`)
-* `/when` — Show next scheduled reminder
-* `/unnotify` — Cancel reminder
-* `/streak` — Show your streak
-* `/streakboard` — Top streaks (per chat)
-* `/score` — Overall score (GitHub quiz mode)
-* `/forcecommit [n] [tag]` — Manually trigger commits (testing)
-
----
-
-## 🔐Security
-
-* **Never commit `.env`**. It contains your tokens.
-* Use minimal GitHub PAT scopes:
-
-  * Public repo → `public_repo`
-  * Private repo → `repo`
-* If you ever accidentally commit secrets, **revoke** them and **rewrite history** (`git filter-repo` or BFG).
-
-`.gitignore` should include:
-
-```
-.env
-quiz_scores.db
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.DS_Store
-Thumbs.db
-```
-
----
-
-## 🛠️Troubleshooting
-
-**I don’t get reminders on my phone.**
-
-* Ensure the bot is **running** (locally or on Render).
-* On Render, check logs: service must be “live”.
-* Run `/notify HH:MM Asia/Kolkata` again; you should receive a test ping.
-* Run `/when` to confirm the next run time.
-
-**Commits aren’t showing on my contribution graph.**
-
-* `GH_USER_EMAIL` must be a **verified** email in your GitHub account.
-* Check repo name/permissions; PAT user must have **write** access.
-* If the repo is public and PAT is fine-grained, ensure **Contents: Read and write** permission for that repo.
-
-**401 Bad credentials** when committing.
-
-* The token is wrong or lacks scopes. Regenerate with minimal scopes and paste into `.env` (no quotes/spaces).
-
-**Timezone issues.**
-
-* Use valid IANA tz like `Asia/Kolkata`, `America/New_York`.
-* Ensure `tzdata` is installed (it’s in `requirements.txt`).
-
----
-
-## ⛓️‍💥Contributing / Extending
-
-* Add more questions in `questions.py` (simple Python list of QAs).
-* Add categories or difficulty.
-* Extend `storage.py` with more analytics (e.g., per-category accuracy).
-* Replace the commit payload with something meaningful (e.g., daily note or spaced-repetition logs).
-
----
-
-## 🖊️Author notes
-
-This project helped me keep a **daily learning habit**, while giving my GitHub graph **authentic activity**. If you adopt it, consider customizing the question bank to match what you want to learn next. Keep it fun—and keep shipping 💚.
-
----
+`main.py` handles Telegram commands and schedules; `leetcode_client.py` reads public metadata; `rewards.py` queues and syncs rewards; `github_committer.py` creates resumable GitHub records; `storage.py` retains existing SQLite tables; `questions.py` holds the optional CS bank. `sync_leetcode.py` and `send_daily.py` provide standalone Actions entry points. Tests use in-memory GitHub fixtures, never live reward writes.
 
 ## 👤 Author
 
@@ -460,11 +194,3 @@ This project helped me keep a **daily learning habit**, while giving my GitHub g
     <img src="https://img.shields.io/badge/X-@techtraboga-3A3F45?style=for-the-badge&logo=x&logoColor=white&labelColor=111418" />
   </a>
 </p>
-
-
-
-
-
-
-
-

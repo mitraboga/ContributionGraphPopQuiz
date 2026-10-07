@@ -1,7 +1,7 @@
 services:
   - type: web
     name: contribution-graph-pop-quiz
-    env: python
+    runtime: python
     plan: free
     region: singapore
     buildCommand: pip install -r requirements.txt
@@ -9,7 +9,19 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: WEBHOOK_SECRET
+      - key: TELEGRAM_USER_ID
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: LEETCODE_USERNAME
+        value: _mitraboga
+      - key: LEETCODE_START_DATE
+        value: '2026-10-07'
+      - key: TZ
+        value: Asia/Kolkata

@@ -1,17 +1,21 @@
-name: daily-telegram
+name: Daily LeetCode reminder
 on:
   schedule:
-    # 9:00 AM IST = 03:30 UTC (cron uses UTC)
+    # 09:00 IST = 03:30 UTC. /notify is an alternative, not an additional requirement.
     - cron: "30 3 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   notify:
+    if: vars.LEETCODE_REMINDER_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
       - run: pip install -r requirements.txt
       - env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}

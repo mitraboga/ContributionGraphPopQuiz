@@ -1,0 +1,36 @@
+name: LeetCode reward sync
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: leetcode-reward-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    # Opt in after configuring secrets/variables. This avoids broken cron runs
+    # before deployment and keeps a PR from creating live rewards.
+    if: vars.LEETCODE_SYNC_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Sync accepted problems
+        env:
+          GITHUB_TOKEN: ${{ secrets.COMMIT_GITHUB_TOKEN }}
+          GITHUB_REPO: ${{ vars.GITHUB_REPO }}
+          GH_USER_NAME: ${{ vars.GH_USER_NAME }}
+          GH_USER_EMAIL: ${{ vars.GH_USER_EMAIL }}
+          LEETCODE_USERNAME: ${{ vars.LEETCODE_USERNAME || '_mitraboga' }}
+          LEETCODE_START_DATE: ${{ vars.LEETCODE_START_DATE || '2026-10-07' }}
+          TZ: Asia/Kolkata
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python sync_leetcode.py

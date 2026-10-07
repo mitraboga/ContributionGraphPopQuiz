@@ -409,3 +409,8 @@ def iter_all_notify_prefs() -> Iterator[Tuple[int, int, int, int, str]]:
                 int(r["notify_minute"]),
                 r["tz"],
             )
+
+
+def clear_notify_time(chat_id: int, user_id: int) -> None:
+    with _db() as conn:
+        conn.execute("DELETE FROM user_prefs WHERE chat_id=? AND user_id=?", (chat_id, user_id))
