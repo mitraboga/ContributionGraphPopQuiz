@@ -1,16 +1,26 @@
+"""Standalone Telegram reminder for GitHub Actions; PTB v21 calls are awaited."""
+import asyncio
+import logging
 import os
+from dotenv import load_dotenv
+load_dotenv(override=False)
 from telegram import Bot
+from leetcode_client import LeetCodeClient, LeetCodeError
 
-# If you already have a function that builds the daily text, import it:
-# from contributions import build_daily_message
-def build_daily_message():
-    # Replace with your real builder
-    return "🎯 Daily Commit Reminder: Keep the streak alive!"
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
-def run():
-    bot = Bot(os.environ["BOT_TOKEN"])
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
-    bot.send_message(chat_id=chat_id, text=build_daily_message())
+
+async def run():
+    try:
+        question = await asyncio.to_thread(LeetCodeClient().daily_problem)
+        text = (f"🧠 Daily LeetCode reminder: {question['title']} ({question['difficulty']})\n"
+                f"https://leetcode.com/problems/{question['titleSlug']}/\n\n"
+                "Any Accepted problem qualifies: Easy 10 / Medium 20 / Hard 50 commits.\nUse /check after solving, or wait for the scheduled sync.")
+    except LeetCodeError:
+        text = "🧠 Solve a LeetCode problem today. Easy → 10 commits, Medium → 20, Hard → 50. Use /check after an Accepted submission."
+    async with Bot(os.environ["BOT_TOKEN"]) as bot:
+        await bot.send_message(os.environ["TELEGRAM_CHAT_ID"], text)
+
 
 if __name__ == "__main__":
-    run()
+    asyncio.run(run())

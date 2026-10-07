@@ -1,134 +1,166 @@
+"""Serial, resumable GitHub Contents API writes with durable reward records."""
 from __future__ import annotations
+
 import base64
 import datetime as dt
+import json
 import os
-import random
-import string
-from typing import Optional
+import re
+import time
+import uuid
+from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
-# Graceful import for requests
-try:
-    import requests  # type: ignore
-except Exception:  # ImportError or anything odd in the env
-    requests = None
+import requests
 
-__all__ = ["GitHubCommitter", "make_daily_commits_if_configured", "diagnose_config"]
-
-GITHUB_API = "https://api.github.com"
+from leetcode_client import REWARDS
 
 
-def _need_requests_msg() -> str:
-    return (
-        "Dependency missing: the 'requests' package is not installed.\n"
-        "Fix: activate your venv and run:\n"
-        "    pip install requests\n"
-        "Then retry your command."
-    )
-
-
-def diagnose_config() -> str:
-    """Return a human-readable diagnostics string about env + deps."""
-    lines = []
-    lines.append(f"requests available: {requests is not None}")
-    for key in ("GITHUB_TOKEN", "GITHUB_REPO", "GH_USER_NAME", "GH_USER_EMAIL"):
-        val = os.environ.get(key)
-        show = (val[:6] + "…" + val[-4:]) if (val and key == "GITHUB_TOKEN" and len(val) > 12) else val
-        lines.append(f"{key}: {'SET' if val else 'MISSING'}{(' ('+show+')') if show else ''}")
-    return "\n".join(lines)
+class GitHubError(RuntimeError):
+    pass
 
 
 class GitHubCommitter:
-    def __init__(
-        self,
-        token: str,
-        repo: str,
-        author_name: str,
-        author_email: str,
-        session: Optional["requests.Session"] = None,  # type: ignore[name-defined]
-    ):
-        if requests is None:
-            raise RuntimeError(_need_requests_msg())
-
-        self.token = token
+    def __init__(self, token, repo, author_name="", author_email="", session=None, write_delay=1.0):
+        if not token or not repo:
+            raise GitHubError("Set GITHUB_TOKEN and GITHUB_REPO in the bot's hosting environment.")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+            raise GitHubError("GITHUB_REPO must be owner/repository.")
+        if bool(author_name) != bool(author_email):
+            raise GitHubError("Set both GH_USER_NAME and GH_USER_EMAIL, or leave both unset to use the token owner.")
         self.repo = repo
-        self.author_name = author_name
-        self.author_email = author_email
+        self.author = {"name": author_name, "email": author_email} if author_name else None
         self.sess = session or requests.Session()
-        self.sess.headers.update(
-            {
-                "Authorization": f"Bearer {self.token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "Commit-Quiz-Bot",
-            }
-        )
+        self.sess.headers.update({"Authorization": f"Bearer {token.strip()}",
+                                  "Accept": "application/vnd.github+json",
+                                  "X-GitHub-Api-Version": "2022-11-28",
+                                  "User-Agent": "LeetCode-Commit-Bot/2.0"})
+        self.base = f"https://api.github.com/repos/{repo}"
+        self.branch = None
+        self.write_delay = write_delay
 
-    def _put_file(self, path: str, content_str: str, message: str):
-        """
-        Create or update a file by path on the default branch (usually main).
-        We create unique paths each time so we don't need an existing SHA.
-        """
-        url = f"{GITHUB_API}/repos/{self.repo}/contents/{path}"
-        body = {
-            "message": message,
-            "content": base64.b64encode(content_str.encode("utf-8")).decode("ascii"),
-             # Let GitHub infer author/committer from the token owner
-        }
+    @classmethod
+    def from_env(cls):
+        return cls(os.getenv("GITHUB_TOKEN", ""), os.getenv("GITHUB_REPO", ""),
+                   os.getenv("GH_USER_NAME", ""), os.getenv("GH_USER_EMAIL", ""))
 
-        r = self.sess.put(url, json=body, timeout=30)
-        if r.status_code not in (200, 201):
-            raise RuntimeError(f"GitHub API error {r.status_code}: {r.text}")
-        return r.json()
+    def request(self, method, url, **kwargs):
+        try:
+            return self.sess.request(method, url, timeout=30, **kwargs)
+        except requests.RequestException as exc:
+            raise GitHubError("GitHub could not be reached. Any completed reward commits are preserved; retry /check.") from exc
 
-    def commit_n(self, n: int = 5, tag: Optional[str] = None):
-        """
-        Make `n` commits by creating n small text files under logs/YYYY/MM/DD/.
-        """
-        today = dt.date.today()
-        prefix = f"logs/{today.year:04d}/{today.month:02d}/{today.day:02d}"
-        tag = tag or "quiz"
-        for i in range(1, n + 1):
-            salt = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
-            path = f"{prefix}/{tag}-{i}-{salt}.txt"
-            content = f"Quiz commit #{i} for {today.isoformat()} tag:{tag}\n"
-            msg = f"quiz: daily commit {today.isoformat()} [{tag}] #{i}"
-            self._put_file(path, content, msg)
+    def raise_error(self, response):
+        code = response.status_code
+        if code == 401:
+            raise GitHubError("GitHub 401: the deployed GITHUB_TOKEN is invalid, expired, or revoked. Replace it in Render Environment (and COMMIT_GITHUB_TOKEN in Actions secrets), then redeploy. Never paste the token into Telegram.")
+        if code in (403, 429):
+            raise GitHubError(f"GitHub {code}: access denied or rate limited. Check the token's Contents: Read and write permission for GITHUB_REPO; if rate limited, wait and retry. Completed reward steps are preserved.")
+        if code == 404:
+            raise GitHubError("GitHub 404: GITHUB_REPO or its default branch is unavailable to this token. Check the repository and token access.")
+        raise GitHubError(f"GitHub HTTP {code}: the operation failed. Completed reward steps are preserved; retry /check.")
+
+    def preflight(self):
+        response = self.request("GET", self.base)
+        if response.status_code != 200:
+            self.raise_error(response)
+        self.branch = response.json()["default_branch"]
+        # Do not silently reward on a non-default branch, where contributions may not count.
+        return f"GitHub authentication OK: {self.repo}, default branch {self.branch}. Write access is verified when a reward is committed."
+
+    def read_json(self, path):
+        response = self.request("GET", f"{self.base}/contents/{quote(path, safe='/')}", params={"ref": self.branch})
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            self.raise_error(response)
+        try:
+            return json.loads(base64.b64decode(response.json()["content"]))
+        except (KeyError, ValueError, TypeError) as exc:
+            raise GitHubError(f"Reward record at {path} is invalid; refusing to overwrite it.") from exc
+
+    def create_json(self, path, payload, message):
+        existing = self.read_json(path)
+        if existing is not None:
+            if existing != payload:
+                raise GitHubError(f"Reward record at {path} differs; refusing to overwrite it.")
+            return False
+        body = {"message": message, "branch": self.branch,
+                "content": base64.b64encode((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()).decode()}
+        if self.author:
+            body.update(author=self.author, committer=self.author)
+        if self.write_delay:
+            time.sleep(self.write_delay)
+        response = self.request("PUT", f"{self.base}/contents/{quote(path, safe='/')}", json=body)
+        if response.status_code == 201:
+            return True
+        # Another process may have created the same deterministic file. A request
+        # may also have succeeded even if its response was lost. Never overwrite.
+        if response.status_code in (409, 422):
+            existing = self.read_json(path)
+            if existing == payload:
+                return False
+        self.raise_error(response)
+
+    def reward(self, record):
+        """One reward per username/problem, with exactly N total commits, even on retry."""
+        if self.branch is None:
+            self.preflight()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", record["username"]) or not re.fullmatch(r"[a-z0-9-]+", record["slug"]):
+            raise GitHubError("Invalid reward path.")
+        prefix = f"leetcode/{record['username'].lower()}/{record['slug']}"
+        first = self.read_json(f"{prefix}/001.json")
+        if first is not None:
+            record = first.get("reward")
+            if not isinstance(record, dict) or f"leetcode/{record.get('username', '').lower()}/{record.get('slug')}" != prefix:
+                raise GitHubError("Reward metadata differs; refusing to overwrite it.")
+        if record["difficulty"] not in REWARDS or record["commits"] != REWARDS[record["difficulty"]]:
+            raise GitHubError("Invalid reward difficulty/count; no new commits issued.")
+        if first is not None:
+            final = self.read_json(f"{prefix}/{record['commits']:03d}.json")
+            if final == {"reward": record, "step": record["commits"]}:
+                return 0, record
+        created = 0
+        for index in range(1, record["commits"] + 1):
+            payload = {"reward": record, "step": index}
+            created += self.create_json(f"{prefix}/{index:03d}.json", payload,
+                                        f"leetcode: {record['title']} ({record['difficulty']}) reward {index}/{record['commits']}")
+        return created, record
+
+    def commit_n(self, n=1, tag=None):
+        if not 1 <= n <= 50:
+            raise GitHubError("/forcecommit count must be between 1 and 50.")
+        self.preflight()
+        today = dt.datetime.now(ZoneInfo(os.getenv("TZ", "Asia/Kolkata"))).date().isoformat()
+        run_id = uuid.uuid4().hex
+        created = 0
+        for index in range(1, n + 1):
+            payload = {"kind": "manual_override", "day": today, "tag": tag or "manual", "run_id": run_id, "step": index}
+            try:
+                created += self.create_json(f"manual/{today}/{run_id}/{index:03d}.json", payload, f"manual: {today} override {index}/{n}")
+            except GitHubError as exc:
+                raise GitHubError(f"Manual request completed {created}/{n} commits. {exc} A new /forcecommit starts a separate request.") from exc
+        return created
 
 
-def make_daily_commits_if_configured(n: int = 5, tag: Optional[str] = None) -> Optional[str]:
-    """
-    Reads env vars and fires commits if configured. Returns a friendly string
-    on success or a human-readable reason if it can’t run (no exceptions).
-    Required env: GITHUB_TOKEN, GITHUB_REPO, GH_USER_NAME, GH_USER_EMAIL
-    """
-    if requests is None:
-        return _need_requests_msg()
+def diagnose_config():
+    # No token fragments or personal email values in diagnostics.
+    return "\n".join(f"{key}: {'SET' if os.getenv(key) else 'MISSING'}" for key in ("GITHUB_TOKEN", "GITHUB_REPO", "GH_USER_NAME", "GH_USER_EMAIL"))
 
-    token = os.environ.get("GITHUB_TOKEN")
-    repo = os.environ.get("GITHUB_REPO")
-    name = os.environ.get("GH_USER_NAME")
-    email = os.environ.get("GH_USER_EMAIL")
-    missing = [k for k, v in {
-        "GITHUB_TOKEN": token,
-        "GITHUB_REPO": repo,
-        "GH_USER_NAME": name,
-        "GH_USER_EMAIL": email,
-    }.items() if not v]
-    if missing:
-        return "GitHub committer not configured (missing env vars): " + ", ".join(missing)
 
+def make_daily_commits_if_configured(n=1, tag=None):
     try:
-        committer = GitHubCommitter(token, repo, name, email)
-        committer.commit_n(n=n, tag=tag)
-        return f"Committed {n} files to {repo}."
-    except Exception as e:
-        # Return a short message rather than raising, so callers/logs stay clean
-        return f"Commit failed: {e}"
+        committer = GitHubCommitter.from_env()
+        count = committer.commit_n(n, tag)
+        return f"Committed {count} manual override records to {committer.repo}."
+    except GitHubError as exc:
+        return f"Commit failed: {exc}"
 
 
 if __name__ == "__main__":
-    # Self-diagnose & attempt a single commit
-    print("Diagnostics:")
     print(diagnose_config())
-    print("Test commit result:")
-    print(make_daily_commits_if_configured(n=1, tag="self-test"))
+    try:
+        print(GitHubCommitter.from_env().preflight())
+    except GitHubError as exc:
+        print(exc)
+        raise SystemExit(1)

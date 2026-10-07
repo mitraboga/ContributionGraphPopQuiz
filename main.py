@@ -1,680 +1,388 @@
+"""Personal Telegram LeetCode reward bot with an optional CS quiz."""
 from __future__ import annotations
+
+import asyncio
+import datetime as dt
+from functools import wraps
+import http.server
 import logging
 import os
-import sys
-import datetime as dt
+import random
+import secrets
 import threading
-import http.server
-import socketserver
-from dataclasses import dataclass
-from typing import Optional
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
-from telegram.ext import (
-    AIORateLimiter,
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-)
-from zoneinfo import ZoneInfo
-from aiohttp import web  # NEW: for webhook server & /healthz
 
-from quiz_engine import QuizEngine
-from storage import (
-    init_db, record_result, get_score,
-    get_daily_count, inc_daily_count,
-    set_notify_time, get_notify_time,
-    mark_day_complete, get_streak, set_user_name, get_top_streaks,
-    iter_all_notify_prefs,
-)
-from questions import get_random_qa, QA
+# Hosting environment wins over local .env values. Load before storage imports.
+load_dotenv(override=False)
 
-import pathlib
-load_dotenv(dotenv_path=pathlib.Path(".env"), override=True)
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import AIORateLimiter, Application, CallbackQueryHandler, CommandHandler, ContextTypes
+from github_committer import GitHubCommitter, GitHubError, diagnose_config
+from leetcode_client import LeetCodeClient, LeetCodeError, REWARDS
+from questions import BANK
+from rewards import RewardService
+from storage import (init_db, record_result, get_score, get_daily_count, inc_daily_count,
+                     set_notify_time, get_notify_time, clear_notify_time, iter_all_notify_prefs)
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger("commit-quiz-bot")
-
+logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
+# HTTP request URLs can contain the Telegram token.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger("leetcode-bot")
+DEFAULT_TZ = os.getenv("TZ", "Asia/Kolkata")
 DAILY_CAP = 5
-DEFAULT_TZ = "Asia/Kolkata"
+HELP_TEXT = """LeetCode Commit Bot 🧠
 
-# === NEW: Webhook/Render config ===
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "defaultsecret")  # set a real one on Render
-RENDER_URL = os.getenv("RENDER_EXTERNAL_URL")                  # present on Render
-WEBHOOK_PATH = f"/telegram/{WEBHOOK_SECRET}"
-PORT = int(os.getenv("PORT", "8000"))
+/daily — today's LeetCode challenge (any accepted problem qualifies)
+/check — check accepted submissions and retry unfinished rewards
+/status — your linked profile and reward settings
+/forcecommit [1–50] [tag] — manual fallback (default: 1)
+/diagnose — read-only GitHub authentication check
+/notify HH:MM [Area/City] — daily reminder
+/when — next reminder
+/unnotify — disable reminder
+/streak — recent completed LeetCode days
+/csquiz or /quiz — optional 5-question CS practice; no commit reward
+/score — CS practice score
+/whoami — your Telegram IDs for setup
+/help — this message
 
-# -------------------- Keep-alive HTTP server for Render free tier --------------------
-def _start_keepalive():
-    """
-    Run a tiny HTTP server in a daemon thread so local dev stays healthy while using
-    Telegram long-polling. On Render webhook mode, we SKIP this and let PTB bind $PORT.
-    """
-    # NEW: Skip keepalive if on Render (webhook mode)
-    if RENDER_URL:
-        return
+Easy: 10 commits • Medium: 20 • Hard: 50
+One reward per problem; repeat Accepted submissions are skipped.
+"""
 
-    port = int(os.environ.get("PORT", "8000"))
 
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, format, *args):
-            # keep logs quieter (Render/health pings a lot)
-            return
+def owner_id():
+    value = os.getenv("TELEGRAM_USER_ID") or os.getenv("TELEGRAM_CHAT_ID", "")
+    return int(value) if value.isdigit() else None
 
-        def do_GET(self):
-            if self.path in ("/", "/health", "/healthz"):
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"ok")
+
+def owner_only(func):
+    @wraps(func)
+    async def wrapped(update, context):
+        if update.effective_user.id != owner_id() or update.effective_chat.type != "private":
+            if update.callback_query:
+                await update.callback_query.answer("This is a personal bot. Owner access is required.", show_alert=True)
             else:
-                self.send_response(404)
-                self.end_headers()
-
-    def serve():
-        with socketserver.TCPServer(("", port), Handler) as httpd:
-            logging.getLogger("commit-quiz-bot").info("Keepalive HTTP on %s", port)
-            httpd.serve_forever()
-
-    threading.Thread(target=serve, daemon=True).start()
-
-# === NEW: Health endpoint for webhook server ===
-async def _healthz_handler(request: web.Request) -> web.Response:
-    return web.Response(text="ok")
-
-# -------------------- Data models --------------------
-@dataclass
-class CurrentQuestion:
-    username: str
-    text: str
-    options: list[int]
-    correct_index: int
-    date_iso: str
-
-@dataclass
-class CSQuestion:
-    category: str
-    text: str
-    options: list[str]
-    correct_index: int
-
-engine = QuizEngine()
-
-HELP_TEXT = (
-    "👋 *Contribution Graph Pop Quiz*\n\n"
-    "Commands:\n"
-    "• `/start` — welcome\n"
-    "• `/setuser <github-username>` — set your GitHub username (for /quiz)\n"
-    "• `/quiz` — GitHub contribution-count question (original)\n"
-    "• `/daily` — 5-question CS quiz (DSA, Cloud, Cybersecurity, DevOps, AI/ML, Data Science, General CS)\n"
-    "• `/notify HH:MM [Area/City]` — daily reminder time (e.g., `/notify 07:30 Asia/Kolkata`)\n"
-    "• `/when` — show your next reminder time\n"
-    "• `/unnotify` — disable your daily reminder\n"
-    "• `/streak` — show your current/best streak\n"
-    "• `/streakboard` — top streaks in this chat\n"
-    "• `/score` — overall score (GitHub flow)\n"
-    "• `/forcecommit [n] [tag]` — manually trigger n commits (debug graph)\n"
-    "• `/help` — this message\n"
-)
-
-# -------------------- Helpers --------------------
-def safe_zoneinfo(tzname: str) -> ZoneInfo:
-    try:
-        return ZoneInfo(tzname)
-    except Exception:
-        return ZoneInfo(DEFAULT_TZ)
-
-def _today_ymd(tzname: str) -> str:
-    tz = safe_zoneinfo(tzname)
-    return dt.datetime.now(tz=tz).date().isoformat()
-
-def _display_name(u) -> str:
-    parts = [u.first_name or ""]
-    if u.last_name:
-        parts.append(u.last_name)
-    return " ".join(p for p in parts if p).strip() or (u.username or f"User {u.id}")
-
-# ---- JobQueue-safe storage for CS questions (so scheduled jobs work) ----
-def _store_cs_question(context: ContextTypes.DEFAULT_TYPE, user_id: int, csq: "CSQuestion") -> None:
-    # Interactive updates: per-user context.user_data available
-    if isinstance(getattr(context, "user_data", None), dict):
-        context.user_data["cs_q"] = csq
-        return
-    # JobQueue: context.user_data is None -> store in application.user_data[user_id]
-    try:
-        app_ud = context.application.user_data  # type: ignore[attr-defined]
-    except Exception:
-        app_ud = None
-    if isinstance(app_ud, dict):
-        bucket = app_ud.setdefault(user_id, {})
-        bucket["cs_q"] = csq
-    else:
-        logger.warning("Could not persist cs_q (no user_data/app.user_data available).")
-
-def _load_cs_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Optional["CSQuestion"]:
-    csq = None
-    if isinstance(getattr(context, "user_data", None), dict):
-        csq = context.user_data.get("cs_q")
-    if csq is None:
-        try:
-            user_id = update.effective_user.id
-            app_ud = context.application.user_data  # type: ignore[attr-defined]
-            if isinstance(app_ud, dict):
-                csq = app_ud.get(user_id, {}).get("cs_q")
-        except Exception:
-            pass
-    return csq
-
-# -------------------- GitHub quiz (original mode) --------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    await update.message.reply_text(
-        "Welcome to *Contribution Graph Pop Quiz*! 🎯\n\n"
-        "GitHub mode: `/setuser <username>` then `/quiz`\n"
-        "CS Daily mode: `/daily` (5 questions/day). Set reminder with `/notify HH:MM [TZ]`.\n",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.MARKDOWN)
-
-async def setuser(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    if not context.args:
-        await update.message.reply_text("Usage: `/setuser <github-username>`", parse_mode=ParseMode.MARKDOWN)
-        return
-    username = context.args[0].strip()
-    try:
-        _ = engine.load_user_year(username)
-    except Exception:
-        await update.message.reply_text(
-            "❌ Couldn't validate that username via the contributions graph. "
-            "Please check the spelling (case-sensitive) and try again.",
-        )
-        return
-    context.user_data["username"] = username
-    await update.message.reply_text(
-        f"✅ Saved GitHub username: *{username}*\nUse `/quiz` to begin!",
-        parse_mode=ParseMode.MARKDOWN
-    )
-
-def _format_options(options: list[int]) -> InlineKeyboardMarkup:
-    buttons = []
-    labels = ["A", "B", "C", "D"]
-    row = []
-    for i, (label, val) in enumerate(zip(labels, options)):
-        row.append(InlineKeyboardButton(f"{label}: {val}", callback_data=f"opt:{i}"))
-        if (i + 1) % 2 == 0:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("⏭ Next question", callback_data="next")])
-    return InlineKeyboardMarkup(buttons)
-
-async def _ask_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE, username: str):
-    q = engine.make_question(username)
-    context.user_data["current_q"] = CurrentQuestion(
-        username=username,
-        text=q.text,
-        options=q.options,
-        correct_index=q.correct_index,
-        date_iso=q.date.isoformat(),
-    )
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"🧩 *{q.text}*\n\nPick one:",
-        reply_markup=_format_options(q.options),
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    username = context.user_data.get("username")
-    if not username:
-        await update.message.reply_text("First set your GitHub username: `/setuser <username>`", parse_mode=ParseMode.MARKDOWN)
-        return
-    await _ask_question(update.effective_chat.id, context, username)
-
-async def score(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    correct, total = get_score(update.effective_chat.id, update.effective_user.id)
-    if total == 0:
-        await update.message.reply_text("You haven't answered any questions yet. Use `/quiz` to start!")
-    else:
-        await update.message.reply_text(f"📊 Score: *{correct} / {total}* correct.", parse_mode=ParseMode.MARKDOWN)
-
-async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    set_user_name(query.message.chat_id, query.from_user.id, _display_name(query.from_user))
-    data = query.data
-
-    current: Optional[CurrentQuestion] = context.user_data.get("current_q")
-    if not current:
-        await query.edit_message_text("Session expired. Use `/quiz` to start a new question.")
-        return
-
-    if data == "next":
-        await _ask_question(update.effective_chat.id, context, current.username)
-        return
-
-    if not data.startswith("opt:"):
-        await query.edit_message_text("Invalid action. Use `/quiz` to start again.")
-        return
-
-    try:
-        idx = int(data.split(":")[1])
-    except ValueError:
-        await query.edit_message_text("Invalid option. Use `/quiz` to start again.")
-        return
-
-    is_correct = (idx == current.correct_index)
-    record_result(update.effective_chat.id, update.effective_user.id, is_correct)
-
-    verdict = "✅ Correct!" if is_correct else f"❌ Incorrect. The right answer was *{current.options[current.correct_index]}*."
-    explain = f"_GitHub contributions on {current.date_iso}_"
-    await query.edit_message_text(
-        text=f"{verdict}\n\n{explain}",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_format_options(current.options),
-    )
-
-# -------------------- CS Daily quiz --------------------
-def _format_cs_options(options: list[str]) -> InlineKeyboardMarkup:
-    buttons = []
-    labels = ["A", "B", "C", "D"]
-    row = []
-    for i, (label, val) in enumerate(zip(labels, options)):
-        row.append(InlineKeyboardButton(f"{label}: {val}", callback_data=f"cs:opt:{i}"))
-        if (i + 1) % 2 == 0:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-    buttons.append([InlineKeyboardButton("⏭ Next question", callback_data="cs:next")])
-    return InlineKeyboardMarkup(buttons)
-
-async def _ask_cs_question(chat_id: int, context: ContextTypes.DEFAULT_TYPE, tzname: str, user_id: Optional[int] = None):
-    qa: QA = get_random_qa()
-    csq = CSQuestion(
-        category=qa.category,
-        text=qa.question,
-        options=qa.options,
-        correct_index=qa.correct_index,
-    )
-
-    if user_id is None:
-        try:
-            user_id = context.update.effective_user.id  # type: ignore[attr-defined]
-        except Exception:
-            user_id = None
-    if user_id is not None:
-        _store_cs_question(context, user_id, csq)
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"🧠 *{csq.category}*: {csq.text}",
-        reply_markup=_format_cs_options(csq.options),
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    prefs = get_notify_time(update.effective_chat.id, update.effective_user.id)
-    tzname = prefs[2] if prefs else DEFAULT_TZ
-    today = _today_ymd(tzname)
-    answered = get_daily_count(update.effective_chat.id, update.effective_user.id, today)
-    if answered >= DAILY_CAP:
-        st, best, _ = get_streak(update.effective_chat.id, update.effective_user.id)
-        await update.message.reply_text(f"🎉 You've completed today's {DAILY_CAP}. Streak: *{st}* (best *{best}*). See you tomorrow!")
-        return
-    await _ask_cs_question(update.effective_chat.id, context, tzname, user_id=update.effective_user.id)
-
-async def cs_cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    set_user_name(query.message.chat_id, query.from_user.id, _display_name(query.from_user))
-    data = query.data
-
-    prefs = get_notify_time(update.effective_chat.id, update.effective_user.id)
-    tzname = prefs[2] if prefs else DEFAULT_TZ
-    today = _today_ymd(tzname)
-
-    csq: Optional[CSQuestion] = _load_cs_question(update, context)
-    if not csq:
-        await query.edit_message_text("Session expired. Use `/daily` to start again.")
-        return
-
-    if data == "cs:next":
-        count_now = get_daily_count(update.effective_chat.id, update.effective_user.id, today)
-        if count_now >= DAILY_CAP:
-            st, best, _ = get_streak(update.effective_chat.id, update.effective_user.id)
-            await query.edit_message_text(f"🎉 Done for today — {DAILY_CAP}/{DAILY_CAP}. Streak: *{st}* (best *{best}*).")
+                await update.effective_message.reply_text("Owner access is required. Use /whoami, then set TELEGRAM_USER_ID in the hosting environment.")
             return
-        await _ask_cs_question(update.effective_chat.id, context, tzname, user_id=update.effective_user.id)
-        return
+        return await func(update, context)
+    return wrapped
 
-    if not data.startswith("cs:opt:"):
-        await query.edit_message_text("Invalid action. Use `/daily` to start again.")
-        return
 
+async def whoami(update, context):
+    await update.effective_message.reply_text(f"Telegram user ID: {update.effective_user.id}\nChat ID: {update.effective_chat.id}")
+
+
+@owner_only
+async def help_cmd(update, context):
+    await update.effective_message.reply_text(HELP_TEXT)
+
+
+@owner_only
+async def status(update, context):
+    service = RewardService()
+    await update.effective_message.reply_text(f"Profile: https://leetcode.com/u/{service.username}/\n"
+        f"Eligible from: {service.start.date()} ({service.tz})\nEasy: 10 • Medium: 20 • Hard: 50 commits\n"
+        "Automatic checks: every 15 minutes while this service is running.\n/check also retries unfinished rewards.")
+
+
+async def daily_text():
+    question = await asyncio.to_thread(LeetCodeClient().daily_problem)
+    return (f"🧠 Today's LeetCode challenge: {question['title']} ({question['difficulty']})\n"
+            f"https://leetcode.com/problems/{question['titleSlug']}/\n\n"
+            "Solve this or any other problem with an Accepted submission.\n"
+            "Easy → 10 commits | Medium → 20 | Hard → 50\n"
+            "Use /check after solving, or wait for an automatic check.")
+
+
+@owner_only
+async def daily(update, context):
     try:
-        idx = int(data.split(":")[2])
+        message = await daily_text()
+    except LeetCodeError as exc:
+        message = str(exc)
+    await update.effective_message.reply_text(message)
+
+
+async def sync_result(context):
+    lock = context.application.bot_data["commit_lock"]
+    if lock.locked():
+        return None
+    async with lock:
+        return await asyncio.to_thread(RewardService().sync)
+
+
+@owner_only
+async def check(update, context):
+    await update.effective_message.reply_text("Checking Accepted submissions. A large reward can take a few minutes; you can keep using the bot.")
+    result = await sync_result(context)
+    await update.effective_message.reply_text(result.message() if result else "A commit operation is already running. Please retry shortly.")
+
+
+async def auto_check(context):
+    result = await sync_result(context)
+    if result and (result.errors or any(n for _, n in result.completed)):
+        message = result.message()
+        # Avoid repeating the same error every 15 minutes.
+        if message != context.application.bot_data.get("last_sync_message"):
+            await context.bot.send_message(owner_id(), message)
+            context.application.bot_data["last_sync_message"] = message
+    elif result:
+        context.application.bot_data.pop("last_sync_message", None)
+
+
+@owner_only
+async def diagnose(update, context):
+    try:
+        message = await asyncio.to_thread(GitHubCommitter.from_env().preflight)
+    except GitHubError as exc:
+        message = str(exc)
+    await update.effective_message.reply_text(diagnose_config() + "\n\n" + message)
+
+
+@owner_only
+async def forcecommit(update, context):
+    try:
+        n = int(context.args[0]) if context.args else 1
+        if not 1 <= n <= 50 or len(context.args) > 2:
+            raise ValueError
     except ValueError:
-        await query.edit_message_text("Invalid option. Use `/daily` to start again.")
+        await update.effective_message.reply_text("Usage: /forcecommit [1–50] [tag]")
         return
-
-    is_correct = (idx == csq.correct_index)
-    count_after = inc_daily_count(update.effective_chat.id, update.effective_user.id, today)
-
-    streak_msg = ""
-    if count_after >= DAILY_CAP:
-        streak, best, _ = mark_day_complete(update.effective_chat.id, update.effective_user.id, today)
-        streak_msg = f"\n\n🔥 *Streak*: {streak} day(s) (best {best})"
-
-        # Trigger 5 commits when the day’s 5 Qs are done
+    lock = context.application.bot_data["commit_lock"]
+    if lock.locked():
+        await update.effective_message.reply_text("A commit operation is already running. Please retry shortly.")
+        return
+    await update.effective_message.reply_text(f"Creating {n} manual override commit(s)…")
+    async with lock:
         try:
-            from github_committer import make_daily_commits_if_configured
-            tag = str(update.effective_user.id)
-            info = make_daily_commits_if_configured(n=5, tag=tag)
-            if info:
-                logger.info(info)
-        except Exception as e:
-            logger.exception("GitHub commit failed", exc_info=e)
+            committer = GitHubCommitter.from_env()
+            count = await asyncio.to_thread(committer.commit_n, n, context.args[1] if len(context.args) > 1 else "manual")
+            message = f"✅ Created {count} manual override commits. LeetCode rewards and streaks are tracked separately."
+        except GitHubError as exc:
+            message = str(exc)
+    await update.effective_message.reply_text(message)
 
-    verdict = "✅ Correct!" if is_correct else f"❌ Incorrect. The right answer was *{csq.options[csq.correct_index]}*."
-    footer = f"Progress today: {min(count_after, DAILY_CAP)} / {DAILY_CAP}{streak_msg}"
-    await query.edit_message_text(
-        text=f"{verdict}\n\n_{csq.category}_\n\n{footer}",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_format_cs_options(csq.options),
-    )
 
-# -------------------- Daily reminder scheduling --------------------
-async def _daily_job(context: ContextTypes.DEFAULT_TYPE):
-    job = context.job
-    chat_id = job.chat_id
-    user_id = job.data["user_id"]
-    tzname = job.data["tz"]
-    today = _today_ymd(tzname)
-    answered = get_daily_count(chat_id, user_id, today)
-    if answered >= DAILY_CAP:
-        return
-    await _ask_cs_question(chat_id, context, tzname, user_id=user_id)
-
-def _reschedule_all_jobs(app: Application):
-    """
-    Recreate all daily reminder jobs from DB (so jobs survive bot restarts/redeploys).
-    """
-    if app.job_queue is None:
-        logger.error('JobQueue not available. Install PTB with: pip install "python-telegram-bot[job-queue]"')
-        return
-
-    # Remove existing daily-* jobs to avoid duplicates
-    for j in list(app.job_queue.jobs()):
-        if j.name and j.name.startswith("daily-"):
-            j.schedule_removal()
-
-    from datetime import time as dtime
-    total = 0
-    for chat_id, user_id, hour, minute, tzname in iter_all_notify_prefs():
-        tz = safe_zoneinfo(tzname)
-        job_name = f"daily-{chat_id}-{user_id}"
-        app.job_queue.run_daily(
-            _daily_job,
-            time=dtime(hour=hour, minute=minute, tzinfo=tz),
-            name=job_name,
-            chat_id=chat_id,
-            data={"user_id": user_id, "tz": tzname},
-        )
-        total += 1
-    logger.info("Rescheduled %d daily reminder job(s) from DB.", total)
-
-# -------------------- /notify + /when + /unnotify --------------------
-async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /notify HH:MM [Area/City]  e.g., /notify 07:30 Asia/Kolkata
-    Sets a daily reminder + sends a 2s test question to confirm it's armed.
-    """
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    if not context.args:
-        await update.message.reply_text(
-            "Usage: `/notify HH:MM [Area/City]`\nExample: `/notify 07:30 Asia/Kolkata`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return
-
-    time_part = context.args[0]
-    tzname = context.args[1] if len(context.args) > 1 else DEFAULT_TZ
-
+async def reminder(context):
     try:
-        hour, minute = map(int, time_part.split(":"))
-        assert 0 <= hour <= 23 and 0 <= minute <= 59
-        tz = safe_zoneinfo(tzname)
-    except Exception:
-        await update.message.reply_text(
-            "❌ Invalid time or timezone. Example: `/notify 07:30 Asia/Kolkata`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        text = await daily_text()
+    except LeetCodeError as exc:
+        text = str(exc)
+    await context.bot.send_message(context.job.chat_id, text)
+
+
+def schedule_reminder(app, chat_id, user_id, hour, minute, tzname):
+    name = f"daily-{chat_id}-{user_id}"
+    for job in app.job_queue.get_jobs_by_name(name):
+        job.schedule_removal()
+    app.job_queue.run_daily(reminder, time=dt.time(hour, minute, tzinfo=ZoneInfo(tzname)),
+                            chat_id=chat_id, user_id=user_id, name=name)
+
+
+@owner_only
+async def notify(update, context):
+    try:
+        if not 1 <= len(context.args) <= 2:
+            raise ValueError
+        hour, minute = map(int, context.args[0].split(":"))
+        tzname = context.args[1] if len(context.args) == 2 else DEFAULT_TZ
+        dt.time(hour, minute, tzinfo=ZoneInfo(tzname))
+    except (ValueError, KeyError):
+        await update.effective_message.reply_text("Usage: /notify HH:MM [Area/City], e.g. /notify 09:00 Asia/Kolkata")
         return
+    cid, uid = update.effective_chat.id, update.effective_user.id
+    set_notify_time(cid, uid, hour, minute, tzname)
+    schedule_reminder(context.application, cid, uid, hour, minute, tzname)
+    await update.effective_message.reply_text(f"Daily LeetCode reminder set for {hour:02d}:{minute:02d} ({tzname}).")
 
-    set_notify_time(update.effective_chat.id, update.effective_user.id, hour, minute, tzname)
 
-    app: Application = context.application
-    chat_id = update.effective_chat.id
-    user_id = update.effective_user.id
-    job_name = f"daily-{chat_id}-{user_id}"
-
-    if app.job_queue is None:
-        logger.error('python-telegram-bot[job-queue] is not installed. '
-                     'Run: pip install "python-telegram-bot[job-queue]"')
-        await update.message.reply_text("🚫 Job queue not available. Please install PTB with job-queue extra.")
-        return
-    for j in app.job_queue.get_jobs_by_name(job_name):
-        j.schedule_removal()
-
-    now = dt.datetime.now(tz=tz)
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if target <= now:
-        target = target + dt.timedelta(days=1)
-
-    from datetime import time as dtime
-    app.job_queue.run_daily(
-        _daily_job,
-        time=dtime(hour=hour, minute=minute, tzinfo=tz),
-        name=job_name,
-        chat_id=chat_id,
-        data={"user_id": user_id, "tz": tzname},
-    )
-
-    app.job_queue.run_once(
-        _daily_job,
-        when=2,
-        name=f"test-{job_name}",
-        chat_id=chat_id,
-        data={"user_id": user_id, "tz": tzname},
-    )
-
-    pretty_next = target.strftime("%Y-%m-%d %H:%M")
-    await update.message.reply_text(
-        f"⏰ Daily reminder set for *{hour:02d}:{minute:02d}* ({tzname}).\n"
-        f"Next run: *{pretty_next}* {tzname}\n"
-        f"✅ I’ll send a test question in ~2s to confirm.",
-        parse_mode=ParseMode.MARKDOWN,
-    )
-
-async def when_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
+@owner_only
+async def when(update, context):
     prefs = get_notify_time(update.effective_chat.id, update.effective_user.id)
     if not prefs:
-        await update.message.reply_text("No reminder set. Use `/notify HH:MM [Area/City]` first.", parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text("No reminder set. Use /notify HH:MM [Area/City].")
         return
-
     hour, minute, tzname = prefs
-    tz = safe_zoneinfo(tzname)
-    now = dt.datetime.now(tz=tz)
+    now = dt.datetime.now(ZoneInfo(tzname))
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
-        target = target + dt.timedelta(days=1)
+        target += dt.timedelta(days=1)
+    await update.effective_message.reply_text(f"Next reminder: {target:%Y-%m-%d %H:%M} ({tzname}).")
 
-    await update.message.reply_text(
-        f"🗓️ Next reminder: *{target.strftime('%Y-%m-%d %H:%M')}* ({tzname})",
-        parse_mode=ParseMode.MARKDOWN,
-    )
 
-async def unnotify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    app: Application = context.application
-    if app.job_queue is None:
-        await update.message.reply_text("No active daily reminder to cancel (job queue unavailable).")
+@owner_only
+async def unnotify(update, context):
+    cid, uid = update.effective_chat.id, update.effective_user.id
+    clear_notify_time(cid, uid)
+    for job in context.job_queue.get_jobs_by_name(f"daily-{cid}-{uid}"):
+        job.schedule_removal()
+    await update.effective_message.reply_text("Daily reminder disabled. Automatic reward checks remain enabled.")
+
+
+@owner_only
+async def streak(update, context):
+    from storage import _db
+    # /check refreshes this cache from the durable GitHub reward records.
+    with _db() as conn:
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='leetcode_rewards'").fetchone()
+        rows = conn.execute("SELECT record FROM leetcode_rewards WHERE username=? AND completed=1", (RewardService().username,)).fetchall() if exists else []
+    import json
+    days = sorted({dt.date.fromisoformat(json.loads(row["record"])["day"]) for row in rows})
+    best = running = 0
+    previous = None
+    for day in days:
+        running = running + 1 if previous and day == previous + dt.timedelta(days=1) else 1
+        best = max(best, running)
+        previous = day
+    today = dt.datetime.now(ZoneInfo(DEFAULT_TZ)).date()
+    current = running if days and days[-1] >= today - dt.timedelta(days=1) else 0
+    await update.effective_message.reply_text(f"🔥 Synced LeetCode streak: {current} day(s), best {best}.\n"
+        f"Synced problems: {len(rows)}. Use /check to refresh. Manual overrides and CS practice do not count.")
+
+
+async def ask_cs(update, context):
+    today = dt.datetime.now(ZoneInfo(DEFAULT_TZ)).date().isoformat()
+    cid, uid = update.effective_chat.id, update.effective_user.id
+    count = get_daily_count(cid, uid, today)
+    if count >= DAILY_CAP:
+        await context.bot.send_message(cid, f"CS practice complete: {DAILY_CAP}/{DAILY_CAP} today. Use /daily for LeetCode.")
         return
-    job_name = f"daily-{update.effective_chat.id}-{update.effective_user.id}"
+    seen = context.user_data.setdefault("cs_seen", set())
+    pool = [i for i in range(len(BANK)) if i not in seen]
+    if not pool:
+        seen.clear()
+        pool = list(range(len(BANK)))
+    index = random.choice(pool)
+    seen.add(index)
+    question = BANK[index]
+    nonce = secrets.token_hex(4)
+    buttons = [[InlineKeyboardButton(f"{chr(65+i)}: {option}", callback_data=f"cs:{nonce}:{i}")] for i, option in enumerate(question.options)]
+    message = await context.bot.send_message(cid, f"🧠 {question.category}: {question.question}\nCS practice {count+1}/{DAILY_CAP}", reply_markup=InlineKeyboardMarkup(buttons))
+    context.user_data["cs_q"] = {"nonce": nonce, "message_id": message.message_id, "chat_id": cid, "question": question, "day": today, "answered": False}
 
-    removed = False
-    for j in app.job_queue.get_jobs_by_name(job_name):
-        j.schedule_removal()
-        removed = True
 
-    if removed:
-        await update.message.reply_text("🛑 Daily reminder disabled.")
-    else:
-        await update.message.reply_text("No active daily reminder to cancel.")
+@owner_only
+async def csquiz(update, context):
+    await ask_cs(update, context)
 
-# -------------------- Streaks --------------------
-async def streak(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    st, best, last = get_streak(update.effective_chat.id, update.effective_user.id)
-    if st == 0:
-        await update.message.reply_text("No streak yet — answer all 5 `/daily` questions today to start a streak! 🔥")
-    else:
-        last_text = f" (last completed: {last})" if last else ""
-        await update.message.reply_text(f"🔥 *Streak*: {st} day(s) — *Best*: {best}{last_text}", parse_mode=ParseMode.MARKDOWN)
 
-async def streakboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    rows = get_top_streaks(update.effective_chat.id, limit=10)
-    if not rows:
-        await update.message.reply_text("No streaks yet in this chat. Be the first: complete `/daily` today!")
+@owner_only
+async def cs_callback(update, context):
+    query = update.callback_query
+    await query.answer()
+    current = context.user_data.get("cs_q")
+    parts = query.data.split(":")
+    today = dt.datetime.now(ZoneInfo(DEFAULT_TZ)).date().isoformat()
+    if len(parts) != 3 or not current or parts[1] != current["nonce"] or query.message.message_id != current["message_id"] or query.message.chat_id != current["chat_id"] or current["day"] != today:
+        await query.edit_message_reply_markup(reply_markup=None)
         return
-    lines = ["🏆 *Top Streaks*"]
-    for i, (uid, st, best, name) in enumerate(rows, start=1):
-        lines.append(f"{i}. {name}: *{st}* (best {best})")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
-
-# -------------------- Force commits --------------------
-async def forcecommit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    set_user_name(update.effective_chat.id, update.effective_user.id, _display_name(update.effective_user))
-    n = 1
-    tag = str(update.effective_user.id)
-    if len(context.args) >= 1:
-        try:
-            n = max(1, int(context.args[0]))
-        except ValueError:
-            await update.message.reply_text("Usage: `/forcecommit [n] [tag]`  (n must be an integer)", parse_mode=ParseMode.MARKDOWN)
-            return
-    if len(context.args) >= 2:
-        tag = context.args[1]
-
+    if parts[2] == "next" and current["answered"]:
+        # Consume next before awaiting send_message, so rapid double taps cannot advance twice.
+        context.user_data.pop("cs_q", None)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await ask_cs(update, context)
+        return
+    if current["answered"]:
+        return
     try:
-        from github_committer import make_daily_commits_if_configured
-        info = make_daily_commits_if_configured(n=n, tag=tag)
-        await update.message.reply_text(info or "No result returned.")
-        logger.info("forcecommit: %s", info)
-    except Exception as e:
-        logger.exception("forcecommit error", exc_info=e)
-        await update.message.reply_text(f"Commit failed: {e}")
+        index = int(parts[2])
+        if not 0 <= index < len(current["question"].options):
+            return
+    except ValueError:
+        return
+    current["answered"] = True
+    question = current["question"]
+    correct = index == question.correct_index
+    record_result(update.effective_chat.id, update.effective_user.id, correct)
+    count = inc_daily_count(update.effective_chat.id, update.effective_user.id, today)
+    verdict = "✅ Correct!" if correct else f"❌ Incorrect. Answer: {question.options[question.correct_index]}"
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Next question", callback_data=f"cs:{current['nonce']}:next")]]) if count < DAILY_CAP else None
+    await query.edit_message_text(f"{verdict}\n\n{question.question}\nCS practice: {count}/{DAILY_CAP}", reply_markup=markup)
 
-# -------------------- Entrypoint --------------------
+
+@owner_only
+async def expired_callback(update, context):
+    await update.callback_query.answer("This old quiz session has expired. Use /csquiz.", show_alert=True)
+    await update.callback_query.edit_message_reply_markup(reply_markup=None)
+
+
+@owner_only
+async def score(update, context):
+    correct, total = get_score(update.effective_chat.id, update.effective_user.id)
+    await update.effective_message.reply_text(f"Practice score: {correct}/{total} correct (includes any historical quiz scores).")
+
+
+async def post_init(app):
+    app.bot_data["commit_lock"] = asyncio.Lock()
+    for cid, uid, hour, minute, tzname in iter_all_notify_prefs():
+        if uid == owner_id():
+            schedule_reminder(app, cid, uid, hour, minute, tzname)
+    if owner_id():
+        app.job_queue.run_repeating(auto_check, interval=900, first=5, name="leetcode-sync")
+    await app.bot.set_my_commands([BotCommand(c, d) for c, d in [
+        ("daily", "Today's LeetCode challenge"), ("check", "Sync accepted problems"),
+        ("forcecommit", "Manual contribution fallback"), ("status", "Profile and rewards"),
+        ("notify", "Set daily reminder"), ("csquiz", "Optional CS practice"),
+        ("diagnose", "Check GitHub authentication"), ("help", "All commands")]])
+
+
+async def error_handler(update, context):
+    # Do not log request URLs, tokens, or full update contents.
+    logger.error("Bot handler failed: %s", type(context.error).__name__)
+    if isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text("The operation could not finish. Completed reward steps are preserved. Try /check or /diagnose.")
+
+
+def keepalive(port):
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path in ("/", "/healthz") else 404)
+            self.end_headers()
+            self.wfile.write(b"ok")
+        def log_message(self, *args):
+            pass
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+
+def build_application(token):
+    app = Application.builder().token(token).rate_limiter(AIORateLimiter()).post_init(post_init).build()
+    for commands, func in [(["start", "help"], help_cmd), (["whoami"], whoami), (["status"], status),
+                           (["daily"], daily), (["check"], check), (["forcecommit"], forcecommit),
+                           (["diagnose"], diagnose), (["notify"], notify), (["when"], when),
+                           (["unnotify"], unnotify), (["quiz", "csquiz"], csquiz), (["score"], score), (["streak"], streak)]:
+        app.add_handler(CommandHandler(commands, func, block=func not in (check, forcecommit, diagnose, daily)))
+    app.add_handler(CallbackQueryHandler(cs_callback, pattern=r"^cs:"))
+    app.add_handler(CallbackQueryHandler(expired_callback, pattern=r"^(opt:|next$)"))
+    app.add_error_handler(error_handler)
+    return app
+
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Contribution Graph Pop Quiz Bot")
-    parser.add_argument("--webhook", action="store_true", help="Force webhook mode (otherwise auto if RENDER url present)")
-    parser.add_argument("--base-url", default=os.environ.get("BASE_URL", ""), help="Public base URL override (for local testing)")
-    parser.add_argument("--path", default=os.environ.get("WEBHOOK_PATH", ""), help="Webhook path override")
-    parser.add_argument("--port", type=int, default=PORT, help="Port to listen on")
-    parser.add_argument("--listen", default=os.environ.get("LISTEN", "0.0.0.0"), help="Host to bind")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--webhook", action="store_true")
     args = parser.parse_args()
-
-    token = os.environ.get("BOT_TOKEN")
+    token = os.getenv("BOT_TOKEN")
     if not token:
-        logger.error("Missing BOT_TOKEN. Set it in the environment or .env file.")
-        sys.exit(1)
-
-    # Ensure DB exists/migrated
+        raise SystemExit("Set BOT_TOKEN in the environment.")
     init_db()
-
-    # Build PTB app
-    application = (
-        Application.builder()
-        .token(token)
-        .rate_limiter(AIORateLimiter())
-        .build()
-    )
-
-    # Commands
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_cmd))
-    application.add_handler(CommandHandler("setuser", setuser))
-    application.add_handler(CommandHandler("quiz", quiz))
-    application.add_handler(CommandHandler("score", score))
-    application.add_handler(CommandHandler("daily", daily))
-    application.add_handler(CommandHandler("notify", notify))
-    application.add_handler(CommandHandler("when", when_cmd))
-    application.add_handler(CommandHandler("unnotify", unnotify))
-    application.add_handler(CommandHandler("streak", streak))
-    application.add_handler(CommandHandler("streakboard", streakboard))
-    application.add_handler(CommandHandler("forcecommit", forcecommit))
-
-    # Callbacks
-    application.add_handler(CallbackQueryHandler(cb_handler, pattern=r"^(opt:|next$)"))
-    application.add_handler(CallbackQueryHandler(cs_cb_handler, pattern=r"^cs:"))
-
-    # Rebuild daily jobs from DB so schedules persist across restarts/redeploys
-    _reschedule_all_jobs(application)
-
-    # Attach /healthz to PTB's aiohttp server (for webhook mode)
-    try:
-        application.web_app.add_routes([web.get("/healthz", _healthz_handler)])
-    except Exception as e:
-        logger.debug("Could not attach /healthz to PTB web_app yet: %s", e)
-
-    # Decide mode: webhook on Render, polling locally
-    base_url = RENDER_URL or args.base_url
-    path = args.path or WEBHOOK_PATH
-    port = args.port
-    listen = args.listen
-
-    if base_url or args.webhook:
-        # WEBHOOK MODE (Render or forced)
-        if not base_url:
-            logger.error("Webhook requested but no base URL provided.")
-            sys.exit(1)
-
-        webhook_url = f"{base_url}{path}"
-        logger.info("Starting in WEBHOOK mode")
-        logger.info("Public base URL: %s", base_url)
-        logger.info("Webhook path: %s", path)
-        logger.info("Setting webhook to: %s", webhook_url)
-
-        application.run_webhook(
-            listen=listen,
-            port=port,
-            url_path=path,
-            webhook_url=webhook_url,
-            # drop_pending_updates=True,  # optional
-        )
+    app = build_application(token)
+    base = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("BASE_URL")
+    port = int(os.getenv("PORT", "8000"))
+    if base or args.webhook:
+        secret = os.getenv("WEBHOOK_SECRET", "")
+        if not base or not secret or secret == "defaultsecret":
+            raise SystemExit("Webhook mode requires BASE_URL or RENDER_EXTERNAL_URL and a custom WEBHOOK_SECRET.")
+        # PTB verifies Telegram's secret header. No secrets in the URL or logs.
+        app.run_webhook(listen="0.0.0.0", port=port, url_path="telegram", webhook_url=f"{base.rstrip('/')}/telegram", secret_token=secret)
     else:
-        # POLLING MODE (local/dev). Start tiny keepalive server here only.
-        _start_keepalive()
-        logger.info("Starting in POLLING mode")
-        application.run_polling(close_loop=False)
+        keepalive(port)
+        app.run_polling()
+
 
 if __name__ == "__main__":
     main()
