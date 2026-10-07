@@ -52,10 +52,37 @@ class GitHubCommitter:
 
     def raise_error(self, response):
         code = response.status_code
+        try:
+            payload = response.json()
+            message = payload.get("message", "") if isinstance(payload, dict) else ""
+        except ValueError:
+            message = ""
+        if not isinstance(message, str):
+            message = ""
+        # Keep GitHub's reason, but never echo authentication values if an
+        # unexpected response contains them. Do not include raw response bodies.
+        token = self.sess.headers.get("Authorization", "").removeprefix("Bearer ")
+        if token:
+            message = message.replace(token, "[redacted]")
+        message = " ".join(message.split())[:180]
+        reason = f" GitHub says: {message}." if message else ""
+        headers = {key.lower(): value for key, value in (getattr(response, "headers", {}) or {}).items()}
         if code == 401:
             raise GitHubError("GitHub 401: the deployed GITHUB_TOKEN is invalid, expired, or revoked. Replace it in Render Environment (and COMMIT_GITHUB_TOKEN in Actions secrets), then redeploy. Never paste the token into Telegram.")
         if code in (403, 429):
-            raise GitHubError(f"GitHub {code}: access denied or rate limited. Check the token's Contents: Read and write permission for GITHUB_REPO; if rate limited, wait and retry. Completed reward steps are preserved.")
+            limited = (code == 429 or headers.get("x-ratelimit-remaining") == "0"
+                       or "retry-after" in headers or "rate limit" in message.lower())
+            if limited:
+                wait = "Wait at least 60 seconds before retrying."
+                if str(headers.get("retry-after", "")).isdigit():
+                    wait = f"Wait {headers['retry-after']} seconds before retrying."
+                elif str(headers.get("x-ratelimit-reset", "")).isdigit():
+                    seconds = max(1, int(headers["x-ratelimit-reset"]) - int(time.time()))
+                    wait = f"Wait {seconds} seconds for the rate limit to reset before retrying."
+                raise GitHubError(f"GitHub {code}: rate limit reached for {self.repo}.{reason} {wait} Completed reward steps are preserved.")
+            if "resource not accessible" in message.lower():
+                raise GitHubError(f"GitHub {code}: the token cannot access the requested operation on {self.repo}.{reason} In GitHub token settings, select this exact destination repository and grant Contents: Read and write. It must match Render's GITHUB_REPO. Save the token settings, then retry. Completed reward steps are preserved.")
+            raise GitHubError(f"GitHub {code}: access denied for {self.repo}.{reason} Check token repository access, Contents: Read and write, and repository rules. No rate-limit signal was returned. Completed reward steps are preserved.")
         if code == 404:
             raise GitHubError("GitHub 404: GITHUB_REPO or its default branch is unavailable to this token. Check the repository and token access.")
         raise GitHubError(f"GitHub HTTP {code}: the operation failed. Completed reward steps are preserved; retry /check.")
@@ -66,7 +93,7 @@ class GitHubCommitter:
             self.raise_error(response)
         self.branch = response.json()["default_branch"]
         # Do not silently reward on a non-default branch, where contributions may not count.
-        return f"GitHub authentication OK: {self.repo}, default branch {self.branch}. Write access is verified when a reward is committed."
+        return f"GitHub authentication/read access OK: {self.repo}, default branch {self.branch}. This does not verify Contents write permission; the token must select this exact repository and grant Contents: Read and write."
 
     def read_json(self, path):
         response = self.request("GET", f"{self.base}/contents/{quote(path, safe='/')}", params={"ref": self.branch})

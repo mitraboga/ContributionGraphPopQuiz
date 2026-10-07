@@ -14,9 +14,10 @@ from rewards import RewardService
 
 
 class Response:
-    def __init__(self, status, data=None):
+    def __init__(self, status, data=None, headers=None):
         self.status_code = status
         self.data = data
+        self.headers = headers or {}
     def json(self):
         return self.data
 
@@ -98,6 +99,59 @@ def test_401_reports_deployment_fix_without_token():
         committer.preflight()
     assert 'secret-should-not-appear' not in str(error.value)
     assert 'Replace' in str(error.value)
+
+
+def test_403_permission_error_names_actual_destination():
+    committer = GitHubCommitter('test-token', 'me/commit-target', session=MemoryGitHub())
+    response = Response(403, {'message': 'Resource not accessible by personal access token'},
+                        {'X-RateLimit-Remaining': '4900'})
+    with pytest.raises(GitHubError) as error:
+        committer.raise_error(response)
+    message = str(error.value)
+    assert 'me/commit-target' in message
+    assert 'select this exact destination repository' in message
+    assert 'Contents: Read and write' in message
+    assert 'Resource not accessible by personal access token' in message
+    assert 'rate limit reached' not in message
+
+
+@pytest.mark.parametrize('code,headers,reason', [
+    (403, {'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '2000000000'}, 'API rate limit exceeded'),
+    (403, {'Retry-After': '120'}, 'You have exceeded a secondary rate limit'),
+    (429, {}, 'Too many requests'),
+])
+def test_rate_limits_do_not_send_users_to_token_permissions(code, headers, reason):
+    committer = GitHubCommitter('test-token', 'me/repo', session=MemoryGitHub())
+    with pytest.raises(GitHubError) as error:
+        committer.raise_error(Response(code, {'message': reason}, headers))
+    message = str(error.value)
+    assert 'rate limit reached' in message
+    assert 'before retrying' in message
+    assert 'Contents' not in message
+    if 'Retry-After' in headers:
+        assert '120 seconds' in message
+
+
+def test_unclassified_403_preserves_reason_without_exposing_token():
+    committer = GitHubCommitter('sensitive-token', 'me/repo', session=MemoryGitHub())
+    with pytest.raises(GitHubError) as error:
+        committer.raise_error(Response(403, {'message': 'Blocked request sensitive-token'}))
+    assert 'sensitive-token' not in str(error.value)
+    assert 'Blocked request [redacted]' in str(error.value)
+    assert 'No rate-limit signal' in str(error.value)
+
+
+def test_unknown_403_does_not_guess_a_rate_limit():
+    committer = GitHubCommitter('test-token', 'me/repo', session=MemoryGitHub())
+    with pytest.raises(GitHubError) as error:
+        committer.raise_error(Response(403))
+    assert 'access denied for me/repo' in str(error.value)
+    assert 'No rate-limit signal' in str(error.value)
+
+
+def test_diagnose_does_not_claim_to_verify_write_access():
+    committer = GitHubCommitter('test-token', 'me/repo', session=MemoryGitHub())
+    assert 'does not verify Contents write permission' in committer.preflight()
 
 
 def test_forcecommit_default_and_cap():

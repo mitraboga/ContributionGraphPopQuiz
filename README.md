@@ -157,7 +157,11 @@ After merging, run **Actions → LeetCode reward sync → Run workflow** to veri
 
 **GitHub 401:** The deployed token is invalid, expired, revoked, or incorrectly copied. Update **Render Environment → GITHUB_TOKEN** and **Actions secrets → COMMIT_GITHUB_TOKEN**, then redeploy. Updating code or `/setuser` cannot repair an invalid token. Never paste credentials into Telegram or commit them.
 
-**GitHub 403/429:** Check Contents permission and repository access. If rate limited, wait before `/check`. Commits are serialized with a delay between writes. Pending reward steps remain retryable.
+**GitHub 403 — "Resource not accessible by personal access token":** In [GitHub's fine-grained token settings](https://github.com/settings/personal-access-tokens), open the token used in Render. Under Repository access, select the exact destination repository shown by `/diagnose` and configured as `GITHUB_REPO`. Under Permissions, grant Contents: Read and write, then save. A token scoped only to the bot's source repository cannot write to a different commit destination. An authentication/read-access success in `/diagnose` does not verify this write permission.
+
+**GitHub 403/429 — rate limit:** The bot identifies rate-limit responses using GitHub's message and headers and displays the wait time. Wait before retrying `/check` or `/forcecommit`. Commits are serialized with a delay between writes. Pending reward steps remain retryable.
+
+**Other GitHub 403:** The bot displays GitHub's reason and the actual destination repository. Check that repository's token access and rules; a 403 alone does not establish that you were rate limited.
 
 **GitHub 404:** Check `GITHUB_REPO`, token repository access, and the default branch. `/diagnose` checks authentication/read access without making a test commit; write permission is exercised by an actual reward or manual override.
 
